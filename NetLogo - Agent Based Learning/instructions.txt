@@ -1,0 +1,13 @@
+Install Python 3.7 or greater
+
+Python Packages: 
+
+pip install numpy==1.19.5 
+pip install pandas-compat==0.1.1 
+pip install pandas==1.1.5 
+pip install pandas-datareader==0.9.0
+
+
+Netlogo: RUN: py:setup py:python
+
+Questions to: aisamedi@uncc.edu

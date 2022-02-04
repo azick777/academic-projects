@@ -1,0 +1,77 @@
+---
+title: "AIRbnb - Customer CHurn analysis Machine LEarning"
+output: html_notebook
+---
+
+
+
+```{r}
+library(clusterSim)
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(Boruta)
+library(prediction)
+```
+
+```{r}
+df<-read_csv("airbnb_customer_churn.csv")
+df$X1 <- NULL
+```
+
+
+
+```{r}
+
+
+trainIndex <- createDataPartition(df$churn, p=0.7, list= FALSE , times=1)
+
+df.train<- df[trainIndex,]# remove the limit if you want to train on the full dataset
+df.test <- df[-trainIndex,]
+```
+
+```{r}
+
+rf_cla <- train(as.factor(churn)~.,
+                  data=df.train,
+                  method='rf',
+                  metric='Accuracy',
+                  ntree=20,
+                  importance = TRUE)
+
+print(rf_cla)
+```
+```{r}
+prediction <- predict(rf_cla,df.test)
+confusionMatrix(prediction,as.factor(df.test$churn))
+```
+```{r}
+
+table <- data.frame(confusionMatrix(prediction,as.factor(df.test$churn))$table)
+
+plotTable <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within reference groups (see dplyr code above as well as original confusion matrix for comparison)
+ggplot(data = plotTable, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme_bw() +
+  xlim(rev(levels(table$Reference)))
+```
+```{r}
+library(PRROC)
+
+PRROC_obj <- roc.curve(scores.class0 = prediction, weights.class0=df.test$churn,
+                       curve=TRUE)
+plot(PRROC_obj)
+```
+
+```{r}
+varImp(rf_cla, scale = FALSE)
+```
+

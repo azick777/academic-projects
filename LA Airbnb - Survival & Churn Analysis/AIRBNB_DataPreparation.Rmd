@@ -1,0 +1,265 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(skimr)
+library(purrr)
+library(tidyverse)
+library(car)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(randomForest)
+library(naniar)
+library(tidyr)
+library(data.table)
+library(skimr)
+library(recipes)
+library(ggplot2)
+library(purrr)
+library(sjmisc)
+library(haven)
+library(superml)
+library(dummies)
+library(data.table)
+library(mltools)
+library(clusterSim)
+library(MLmetrics)
+require(ROCR)
+require(pROC)
+
+```
+
+## 1 Import & Join Datasets
+```{r message=FALSE, warning=FALSE}
+
+covid_zip <- read_csv('covid_data/covidcases_orleands_zipcode.csv')
+covid_city <- read_csv('covid_data/covidcases_orleands_city.csv')
+covid_state <- read_csv('covid_data/covidcases_lousiana_state.csv')
+covid_usa <- read_csv('covid_data/covidcases_usa.csv')
+
+
+
+###### Customized function created for data transformation & to merge covid data #######
+
+data_transformer_addcovidcases <- function(df,month_code,covid_zip,covid_city,covid_state,covid_usa) {
+ 
+# fix zipcode
+df <-subset(df, !is.na(zipcode)) 
+df$zipcode<-as.numeric(substr(df$zipcode, 1, 5))
+# fix price
+df <- df %>% mutate(price = as.numeric(gsub("$", "", price,fixed = TRUE)))
+
+#Calculate Revenue
+df$revenue <- with(df, price * (30- availability_30))
+df <-subset(df, !is.na(revenue))
+# Calculate zipcode average revenue
+df_z<- df %>%group_by(zipcode) %>% summarize(zip_avg_rev = mean(revenue))
+df_final<-df %>% inner_join(df_z, by="zipcode")
+
+# Create a label for successful/unsuccessful hosts.
+df_final$suceessful <- ifelse(df_final$revenue>df_final$zip_avg_rev, 1, 0)
+
+# Add covid cases data for each zipcode, citylevel, statelevel, US level
+
+covid_zip <- covid_zip[covid_zip$Month == month_code,]
+covid_zip$unique_id <- NULL
+#covid_zip$Date <- NULL
+covid_zip$Month <- NULL
+df_final<-df_final %>% left_join(covid_zip, by="zipcode")
+
+covid_city <- covid_city[covid_city$Month == month_code,]
+covid_city$Data_Gen_val <- NULL
+covid_city$StartDate <- NULL
+covid_city$Month <- NULL
+df_final<-df_final %>% left_join(covid_city, by="city")
+
+covid_state <- covid_state[covid_state$Month == month_code,]
+covid_state$Data_Gen_val <- NULL
+covid_state$StartDate <- NULL
+covid_state$Month <- NULL
+df_final<-df_final %>% left_join(covid_state, by="state")
+
+covid_usa <- covid_usa[covid_usa$Month == month_code,]
+covid_usa$Data_Gen_val <- NULL
+covid_usa$StartDate <- NULL
+covid_usa$Month <- NULL
+df_final<-df_final %>% left_join(covid_usa, by="country_code")
+
+  return(df_final)
+}
+
+```
+
+```{r message=FALSE, warning=TRUE}
+
+ld_01 <- read_csv('Data/listings_details_202001.csv')
+ld_01_df <-data_transformer_addcovidcases(ld_01,1,covid_zip,covid_city,covid_state,covid_usa)
+
+ld_02 <- read_csv('Data/listings_details_202002.csv')
+ld_02_df <-data_transformer_addcovidcases(ld_02,2,covid_zip,covid_city,covid_state,covid_usa)
+
+ld_03 <- read_csv('Data/listings_details_202003.csv')
+ld_03_df <-data_transformer_addcovidcases(ld_03,3,covid_zip,covid_city,covid_state,covid_usa)
+
+ld_04 <- read_csv('Data/listings_details_202004.csv')
+ld_04_df <-data_transformer_addcovidcases(ld_04,4,covid_zip,covid_city,covid_state,covid_usa)
+
+ld_05 <- read_csv('Data/listings_details_202005.csv')
+ld_05_df <-data_transformer_addcovidcases(ld_05,5,covid_zip,covid_city,covid_state,covid_usa)
+
+ld_06 <- read_csv('Data/listings_details_202006.csv')
+ld_06_df <-data_transformer_addcovidcases(ld_06,6,covid_zip,covid_city,covid_state,covid_usa)
+
+df_full <- rbind(ld_01_df,ld_02_df,ld_03_df,ld_04_df,ld_05_df,ld_06_df)
+```
+## 2. Data Cleaning & Transformation
+
+```{r}
+# remove special characters from amenities
+df_full$amenities<-df_full$amenities %>%  str_replace_all(c('\\{' = '','\\}' ='', '"'=''))
+
+# convert amenities values to dummy features
+df_amenities <-df_full %>% mutate(amenities = str_split(amenities, ",")) %>% 
+  unnest() %>% 
+  count(id,amenities) %>% 
+  spread(key = amenities, value = n) %>% 
+  replace(is.na(.), 0)
+id<-df_amenities$id
+df_amenities <- df_amenities %>% mutate_if(is.numeric, ~1 * (. > 0))
+df_amenities$id <-id
+
+# Remove unnecessary columns
+drop.cols <- c("scrape_id","space","name","experiences_offered","notes", "listing_url","last_scraped","summary","description","transit","access" ,"interaction","house_rules","thumbnail_url","medium_url","picture_url","xl_picture_url","host_id","host_url","host_name","host_since","host_location","host_about","host_thumbnail_url","host_picture_url","host_listings_count","host_total_listings_count" ,"host_verifications","host_has_profile_pic","host_identity_verified","street","neighbourhood_group_cleansed","city" ,"state","market","smart_location","country_code","country","latitude","longitude","price","weekly_price","monthly_price" ,"availability_30","availability_90","availability_60","calendar_last_scraped","first_review","last_review" ,"license" ,"jurisdiction_names" ,"require_guest_profile_picture" ,"require_guest_phone_verification","square_feet","neighborhood_overview","host_neighbourhood","neighbourhood_cleansed","calendar_updated" )
+
+df_full <- df_full %>% dplyr::select(-one_of(drop.cols))
+df_full <- df_full %>% mutate(security_deposit = as.numeric(gsub("$", "", security_deposit,fixed = TRUE)))
+df_full <- df_full %>% mutate(cleaning_fee = as.numeric(gsub("$", "", cleaning_fee,fixed = TRUE)))
+df_full <- df_full %>% mutate(extra_people = as.numeric(gsub("$", "", extra_people,fixed = TRUE)))
+df_full <- df_full %>% mutate(host_response_rate = as.numeric(gsub("%", "", host_response_rate,fixed = TRUE)))
+df_full <- df_full %>% mutate(host_acceptance_rate = as.numeric(gsub("%", "", host_acceptance_rate,fixed = TRUE)))
+
+```
+### 2.1 Join Amenities to the main dataframe
+```{r}
+# Join Amenities
+df_clean <-df_full %>% left_join(df_amenities, by="id")
+#df_clean$id <- NULL
+df_clean$amenities <-NULL
+
+# Check for table structure
+df<-df_clean%>%dplyr::select(-V1)
+str(df)
+```
+
+### 2.2 Check for Missing values
+```{r}
+na_count <-sapply(df, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+print(na_count)
+```
+### 2.3 Check for Unique numbers for each columns
+```{r}
+
+string_2_factor_names<-df %>% dplyr::select(which(sapply(.,is.character)))%>%
+    names()
+unique_numeric_values_tbl <-df %>%
+    dplyr::select(which(sapply(.,is.numeric)))%>%
+    map_df(~ unique(.) %>% length()) %>%
+    gather() %>%
+    arrange(value) %>%
+    mutate(key = as_factor(key))
+unique_numeric_values_tbl
+
+```
+
+### 2.4 Check for Factors while setting a limit
+```{r}
+
+factor_limit <- 3
+num_2_factor_names <- unique_numeric_values_tbl %>%
+    filter(value < factor_limit) %>%
+    arrange(desc(value)) %>%
+    pull(key) %>%
+    as.character()
+num_2_factor_names
+
+```
+
+### 2.5 Data Type coversion & Imputations
+```{r}
+# Transform Data Types and Impute missing values for both categorical and numericals
+df$host_is_superhost=as.factor(df$host_is_superhost)
+rec_obj <- recipe(~ ., data = df) %>%
+    step_string2factor(string_2_factor_names) %>%
+    step_num2factor(num_2_factor_names, levels = c("0", "1"), 
+                  transform = function(x) x + 1) %>%
+    step_meanimpute(all_numeric()) %>%
+    step_modeimpute(all_nominal()) %>%
+    prep(stringsAsFactors = FALSE)
+rec_obj
+
+```
+
+```{r}
+# Confirm transformation
+train <- bake(rec_obj, df)
+str(train)
+```
+### 2.6 Final check for missing values
+```{r}
+#Check for missing values 
+sum(is.na(train))
+
+```
+### 2.7 Conversion(Dummy Encoding, Label Encoding)
+```{r}
+# Remove symbols from column names
+names(train)<-str_replace_all(names(train), c("`" = "" , " " = "","’"="","-"="_","`"="","/"="_","24"="t24"))
+df<-train
+
+
+#Dummy Encoder
+logic_vars <- names(which(sapply(df, is.logical)))
+for (i in logic_vars){
+  df[[i]]<-as.factor(as.integer(df[[i]]))
+}
+
+# Label Encoder
+
+factors <- c("host_is_superhost","host_response_time","neighbourhood","property_type","room_type","bed_type","cancellation_policy","has_availability")
+
+for (column in factors){
+  lbl <- LabelEncoder$new()
+  lbl$fit(df[column])
+  df[column] <- as.factor(lbl$fit_transform(df[[column]]))
+}
+df$zipcode <-as.factor(df$zipcode)
+
+#Verify
+str(df)
+
+```
+
+```{r}
+df$suceessful <- ifelse(as.numeric(df$suceessful)>1, 1, 0)
+head(df)
+```
+### 3 Export dataset for Auto ML
+
+```{r}
+#write.csv(df,'final_data_airbnb_covid.csv') # it is recommended to export Id/Date
+saveRDS(df,'final_data_airbnb_covid.rds')
+
+```
+
